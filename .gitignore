@@ -1,0 +1,29 @@
+# Original challenge download
+*.zip
+**/__MACOSX/
+**/.DS_Store
+
+# Raw dataset (2GB+, provided separately, not source-controlled)
+6ab10eb3b23ba_student_resource/student_resource/dataset/
+
+# Generated submission outputs (large, regenerable from code + data)
+output/*.tsv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Model / experiment artifacts
+*.pt
+*.pth
+*.pkl
+*.joblib
+models/
+checkpoints/
+
+# Logs
+*.log
