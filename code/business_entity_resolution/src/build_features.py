@@ -11,6 +11,7 @@ training.
 """
 
 import argparse
+import time
 
 import pandas as pd
 
@@ -19,6 +20,10 @@ from .blocking import prepare_records
 from .features import compute_pair_features
 from .io_utils import read_ground_truth, read_source
 from .train_matcher import downsample_negatives, label_candidates
+
+
+def _log(msg: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 SPLIT_SOURCE1 = {"train": config.TRAIN_SOURCE1, "sample": config.SAMPLE_TRAIN_SOURCE1, "test": config.TEST_SOURCE1}
 SPLIT_SOURCE2 = {"train": config.TRAIN_SOURCE2, "sample": config.SAMPLE_TRAIN_SOURCE2, "test": config.TEST_SOURCE2}
@@ -42,29 +47,33 @@ def main() -> None:
     if not candidates_path.exists():
         raise SystemExit(f"{candidates_path} not found — run build_candidates.py --split {args.split}"
                           f"{' --source sample' if split_key == 'sample' else ''} first.")
+    _log(f"loading {candidates_path} ({candidates_path.stat().st_size / 1e6:.0f} MB)...")
     pairs_df = pd.read_parquet(candidates_path)
+    _log(f"  {len(pairs_df):,} candidate pairs loaded")
 
-    print(f"Loading {split_key} sources...")
+    _log(f"loading {split_key} sources...")
     s1_df = prepare_records(read_source(SPLIT_SOURCE1[split_key]))
     s2_df = prepare_records(read_source(SPLIT_SOURCE2[split_key]))
     s3_df = prepare_records(read_source(SPLIT_SOURCE3[split_key]))
+    _log("  sources ready")
 
-    print(f"Computing features for {len(pairs_df):,} candidate pairs...")
+    _log(f"computing features for {len(pairs_df):,} candidate pairs...")
     features_df = compute_pair_features(pairs_df, s1_df, {"S2": s2_df, "S3": s3_df})
+    _log("  features computed")
 
     if args.split == "train":
         ground_truth = read_ground_truth(SPLIT_GROUND_TRUTH[split_key])
         features_df = label_candidates(features_df, ground_truth)
-        print(f"  positives: {features_df['label'].sum():,} / {len(features_df):,}")
+        _log(f"  positives: {features_df['label'].sum():,} / {len(features_df):,}")
         if not args.no_downsample:
             before = len(features_df)
             features_df = downsample_negatives(features_df)
-            print(f"  downsampled negatives: {before:,} -> {len(features_df):,} rows")
+            _log(f"  downsampled negatives: {before:,} -> {len(features_df):,} rows")
 
     config.FEATURES_DIR.mkdir(parents=True, exist_ok=True)
     out_path = config.FEATURES_DIR / f"{split_key}_features.parquet"
     features_df.to_parquet(out_path, index=False)
-    print(f"Wrote {out_path}")
+    _log(f"wrote {out_path}")
 
 
 if __name__ == "__main__":

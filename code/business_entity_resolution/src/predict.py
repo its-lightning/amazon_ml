@@ -6,12 +6,18 @@ notebooks/02_train_matcher.ipynb):
     python -m src.predict
 """
 
+import time
+
 import pandas as pd
 
 from . import config
 from .evaluation import predictions_from_scores
 from .io_utils import read_source, write_id_list_tsv
 from .train_matcher import load_model, score_candidates
+
+
+def _log(msg: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def main() -> None:
@@ -24,19 +30,23 @@ def main() -> None:
             "notebooks/02_train_matcher.ipynb first (it saves the model there)."
         )
 
+    _log(f"loading {features_path}...")
     features_df = pd.read_parquet(features_path)
+    _log(f"  {len(features_df):,} rows loaded")
     model, threshold = load_model()
-    print(f"Loaded matcher, decision threshold={threshold}")
+    _log(f"loaded matcher, decision threshold={threshold}")
 
+    _log("scoring candidates...")
     scored = score_candidates(model, features_df)
     predictions = predictions_from_scores(scored, threshold)
+    _log("  scored")
 
     test_s1_ids = read_source(config.TEST_SOURCE1)["entity_id"]
     rows = {s1_id: predictions.get(s1_id, set()) for s1_id in test_s1_ids}
 
     write_id_list_tsv(config.MATCHING_RESULTS_PATH, rows, "source1_entity_id", "matched_entity_ids")
     n_matched = sum(1 for ids in rows.values() if ids)
-    print(f"Wrote {config.MATCHING_RESULTS_PATH}: {n_matched:,} / {len(rows):,} entities with >=1 match")
+    _log(f"wrote {config.MATCHING_RESULTS_PATH}: {n_matched:,} / {len(rows):,} entities with >=1 match")
 
     if not config.CANDIDATE_PAIRS_PATH.exists():
         print(

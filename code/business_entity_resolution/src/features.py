@@ -28,7 +28,7 @@ FEATURE_COLUMNS = [
 def _pairwise_features(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
     """Row-aligned feature computation between two same-length record frames."""
     n = len(a)
-    out = {col: np.zeros(n, dtype=np.float64) for col in FEATURE_COLUMNS if col != "name_tfidf_cosine"}
+    out = {col: np.zeros(n, dtype=np.float32) for col in FEATURE_COLUMNS if col != "name_tfidf_cosine"}
 
     a_core = a["name_core"].to_numpy()
     b_core = b["name_core"].to_numpy()
@@ -95,12 +95,13 @@ def compute_pair_features(
         a = s1_idx.loc[group["source1_entity_id"]].reset_index(drop=True)
         b = other_idx.loc[group["candidate_entity_id"]].reset_index(drop=True)
         feats = _pairwise_features(a, b)
-        feats["name_tfidf_cosine"] = group["similarity"].to_numpy()
+        feats["name_tfidf_cosine"] = group["similarity"].to_numpy(dtype=np.float32)
         feats["source1_entity_id"] = group["source1_entity_id"].to_numpy()
         feats["candidate_entity_id"] = group["candidate_entity_id"].to_numpy()
         feats["source"] = source_name
         chunks.append(feats)
 
     result = pd.concat(chunks, ignore_index=True)
+    result["source"] = result["source"].astype("category")
     ordered_cols = ["source1_entity_id", "candidate_entity_id", "source"] + FEATURE_COLUMNS
     return result[ordered_cols]

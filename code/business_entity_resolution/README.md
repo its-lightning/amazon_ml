@@ -3,6 +3,9 @@
 Pipeline for the Amazon ML Challenge 2026 Business Entity Resolution task. See the
 repo root `CLAUDE.md` for the full problem spec, data schema, and output format.
 
+Blocking on the full test set takes hours — see **[CHECKPOINTING.md](CHECKPOINTING.md)**
+for how progress is saved and how to resume an interrupted run instead of restarting.
+
 ## Approach
 
 - **Blocking (candidate generation):** partition by exact `country` match, then an
