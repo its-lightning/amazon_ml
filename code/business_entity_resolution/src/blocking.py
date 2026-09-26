@@ -17,7 +17,7 @@ import jellyfish
 import numpy as np
 import pandas as pd
 from scipy import sparse
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import HashingVectorizer, TfidfTransformer
 from tqdm import tqdm
 
 from .config import (
@@ -126,10 +126,19 @@ def generate_candidate_pairs(
             [s1_df[field]] + [f[field] for f in source_frames.values()],
             ignore_index=True,
         )
-        vec = TfidfVectorizer(
-            analyzer="char_wb", ngram_range=(2, 4), min_df=1, max_features=2**20, dtype=np.float32
+        # HashingVectorizer + TfidfTransformer, not TfidfVectorizer: TfidfVectorizer
+        # (via CountVectorizer) builds one Python dict of every distinct n-gram across
+        # the WHOLE corpus before applying max_features, which OOMs well before that
+        # cap ever kicks in once the corpus reaches millions of documents (the full
+        # test set: ~11.7M name/address strings). HashingVectorizer hashes n-grams
+        # straight into a fixed-width feature space with no global vocabulary, so
+        # memory stays bounded regardless of corpus size.
+        hasher = HashingVectorizer(
+            analyzer="char_wb", ngram_range=(2, 4), n_features=2**20,
+            alternate_sign=False, norm=None, dtype=np.float32,
         )
-        mat = vec.fit_transform(corpus)
+        counts = hasher.transform(corpus)
+        mat = TfidfTransformer().fit_transform(counts).astype(np.float32)
         n_s1 = len(s1_df)
         s1_mat = mat[:n_s1].tocsr()
         offset = n_s1
