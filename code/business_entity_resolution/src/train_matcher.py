@@ -55,22 +55,38 @@ def downsample_negatives(
     """Cap the number of negative (non-match) candidates kept per Source 1 entity,
     relative to how many positives it has (at least 1, so pure-negative/singleton
     entities still contribute some negative examples). Speeds up training without
-    throwing away the (usually far more informative) positive pairs."""
-    rng = np.random.default_rng(seed)
-    kept = []
-    for s1_id, group in labeled_df.groupby("source1_entity_id"):
-        pos = group[group["label"] == 1]
-        neg = group[group["label"] == 0]
-        n_keep = max(negatives_per_positive, negatives_per_positive * len(pos))
-        if len(neg) > n_keep:
-            neg = neg.iloc[rng.choice(len(neg), size=n_keep, replace=False)]
-        kept.append(pos)
-        kept.append(neg)
-    return pd.concat(kept, ignore_index=True)
+    throwing away the (usually far more informative) positive pairs.
+
+    Vectorized (shuffle once + groupby.cumcount + a single concat) rather than a
+    per-entity Python loop appending hundreds of thousands of tiny frames — the
+    latter is a known memory/perf anti-pattern at this scale (millions of rows,
+    100k+ groups) and crashed outright on this machine's 16GB RAM.
+    """
+    is_pos = labeled_df["label"].to_numpy() == 1
+    pos_df = labeled_df.loc[is_pos]
+    neg_df = labeled_df.loc[~is_pos].sample(frac=1.0, random_state=seed)
+
+    pos_counts = pos_df.groupby("source1_entity_id").size()
+    limits = neg_df["source1_entity_id"].map(pos_counts).fillna(0).astype(int) * negatives_per_positive
+    limits = limits.clip(lower=negatives_per_positive)
+
+    rank = neg_df.groupby("source1_entity_id").cumcount()
+    kept_neg_df = neg_df[rank.to_numpy() < limits.to_numpy()]
+
+    return pd.concat([pos_df, kept_neg_df], ignore_index=True)
 
 
-def train_xgboost(train_df: pd.DataFrame, **xgb_params) -> xgb.XGBClassifier:
-    """Fit the matcher. ``train_df`` must have FEATURE_COLUMNS + a ``label`` column."""
+def train_xgboost(
+    train_df: pd.DataFrame,
+    eval_df: pd.DataFrame | None = None,
+    use_gpu: bool = True,
+    early_stopping_rounds: int | None = 30,
+    **xgb_params,
+) -> xgb.XGBClassifier:
+    """Fit the matcher. ``train_df`` (and ``eval_df`` if given) must have
+    FEATURE_COLUMNS + a ``label`` column. Pass ``eval_df`` to get per-round
+    validation metrics (and early stopping) so you can see overfitting as it happens
+    instead of only after the fit finishes."""
     params = dict(
         n_estimators=300,
         max_depth=5,
@@ -80,9 +96,21 @@ def train_xgboost(train_df: pd.DataFrame, **xgb_params) -> xgb.XGBClassifier:
         eval_metric="aucpr",
         random_state=RANDOM_SEED,
     )
+    if use_gpu:
+        params.update(device="cuda", tree_method="hist")
+    if eval_df is not None and early_stopping_rounds:
+        params["early_stopping_rounds"] = early_stopping_rounds
     params.update(xgb_params)
+
     model = xgb.XGBClassifier(**params)
-    model.fit(train_df[FEATURE_COLUMNS], train_df["label"])
+    fit_kwargs = {}
+    if eval_df is not None:
+        fit_kwargs["eval_set"] = [
+            (train_df[FEATURE_COLUMNS], train_df["label"]),
+            (eval_df[FEATURE_COLUMNS], eval_df["label"]),
+        ]
+        fit_kwargs["verbose"] = True
+    model.fit(train_df[FEATURE_COLUMNS], train_df["label"], **fit_kwargs)
     return model
 
 

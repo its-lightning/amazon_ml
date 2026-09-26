@@ -27,6 +27,7 @@ models/
 checkpoints/
 code/business_entity_resolution/features/
 code/business_entity_resolution/candidates/
+code/business_entity_resolution/data_sample/
 
 # Logs
 *.log

@@ -20,7 +20,13 @@ from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 
-from .config import MAX_TOKEN_DOC_FREQ, MIN_NAME_SIMILARITY, TOP_K_PER_SOURCE
+from .config import (
+    MAX_CANDIDATE_POOL_SIZE,
+    MAX_TOKEN_DOC_FREQ,
+    MIN_NAME_SIMILARITY,
+    RANDOM_SEED,
+    TOP_K_PER_SOURCE,
+)
 from .normalize import normalize_address, normalize_name
 
 
@@ -45,7 +51,11 @@ def prepare_records(df: pd.DataFrame) -> pd.DataFrame:
 def _build_index(df: pd.DataFrame) -> dict:
     """Build a {(country, key): set(row_position)} inverted index.
 
-    ``key`` is either a name token or a ``"ph:<metaphone code>"`` phonetic key.
+    ``key`` is a name token, a ``"ph:<metaphone code>"`` phonetic key, an
+    ``"addr:<token>"`` address token, or a ``"pin:<code>"`` postal code. Address
+    tokens matter because feature importance shows address similarity is a stronger
+    match signal than name similarity — blocking on name alone would silently drop
+    true matches whose names were reworded/abbreviated but whose address matches.
     Keys that appear in more than ``MAX_TOKEN_DOC_FREQ`` of a country's rows are
     dropped (too common to be useful for blocking, e.g. leftover generic words).
     """
@@ -58,8 +68,15 @@ def _build_index(df: pd.DataFrame) -> dict:
             index[(country, tok)].add(pos)
         for code in row.phonetic_codes:
             index[(country, f"ph:{code}")].add(pos)
+        for tok in row.address_tokens:
+            index[(country, f"addr:{tok}")].add(pos)
+        for pin in row.postal_codes:
+            index[(country, f"pin:{pin}")].add(pos)
 
-    max_per_country = {c: max(5, int(n * MAX_TOKEN_DOC_FREQ)) for c, n in country_counts.items()}
+    max_per_country = {
+        c: max(5, min(int(n * MAX_TOKEN_DOC_FREQ), MAX_CANDIDATE_POOL_SIZE))
+        for c, n in country_counts.items()
+    }
     for key in list(index):
         country, _ = key
         if len(index[key]) > max_per_country.get(country, 5):
@@ -74,6 +91,10 @@ def _candidate_positions(row, index: dict) -> set:
         positions |= index.get((country, tok), set())
     for code in row.phonetic_codes:
         positions |= index.get((country, f"ph:{code}"), set())
+    for tok in row.address_tokens:
+        positions |= index.get((country, f"addr:{tok}"), set())
+    for pin in row.postal_codes:
+        positions |= index.get((country, f"pin:{pin}"), set())
     return positions
 
 
@@ -100,44 +121,72 @@ def generate_candidate_pairs(
     Long-format dataframe with columns: source1_entity_id, candidate_entity_id,
     source, similarity.
     """
-    corpus = pd.concat(
-        [s1_df["name_core"]] + [f["name_core"] for f in source_frames.values()],
-        ignore_index=True,
-    )
-    vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), min_df=1, max_features=2**20)
-    tfidf = vectorizer.fit_transform(corpus)
+    def _fit_tfidf(field: str):
+        corpus = pd.concat(
+            [s1_df[field]] + [f[field] for f in source_frames.values()],
+            ignore_index=True,
+        )
+        vec = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 4), min_df=1, max_features=2**20, dtype=np.float32
+        )
+        mat = vec.fit_transform(corpus)
+        n_s1 = len(s1_df)
+        s1_mat = mat[:n_s1].tocsr()
+        offset = n_s1
+        by_source = {}
+        for name, frame in source_frames.items():
+            by_source[name] = mat[offset : offset + len(frame)].tocsr()
+            offset += len(frame)
+        return s1_mat, by_source
 
-    n_s1 = len(s1_df)
-    s1_tfidf = tfidf[:n_s1]
-    offset = n_s1
-    source_tfidf = {}
-    for name, frame in source_frames.items():
-        source_tfidf[name] = tfidf[offset : offset + len(frame)]
-        offset += len(frame)
+    # Two independent similarity spaces: a true match may agree strongly on name
+    # (reworded/typo'd address) OR on address (very different trade name), so
+    # candidates are ranked by whichever signal is stronger, not name alone.
+    s1_name_tfidf, source_name_tfidf = _fit_tfidf("name_core")
+    s1_addr_tfidf, source_addr_tfidf = _fit_tfidf("address_clean")
 
+    entity_ids = {name: frame["entity_id"].to_numpy() for name, frame in source_frames.items()}
     indices = {name: _build_index(frame) for name, frame in source_frames.items()}
+    rng = np.random.default_rng(RANDOM_SEED)
 
     records = []
     iterator = s1_df.itertuples(index=False)
     if show_progress:
-        iterator = tqdm(iterator, total=n_s1, desc="blocking")
+        iterator = tqdm(iterator, total=len(s1_df), desc="blocking")
 
     for s1_pos, row in enumerate(iterator):
-        s1_vec = s1_tfidf[s1_pos]
-        for source_name, frame in source_frames.items():
+        s1_name_vec = s1_name_tfidf[s1_pos]
+        s1_addr_vec = s1_addr_tfidf[s1_pos]
+        for source_name in source_frames:
             candidate_positions = _candidate_positions(row, indices[source_name])
             if not candidate_positions:
                 continue
-            positions = np.fromiter(candidate_positions, dtype=np.int64)
-            sims = source_tfidf[source_name][positions].dot(s1_vec.T)
-            sims = np.asarray(sims.todense()).ravel()
-            order = np.argsort(-sims)[:top_k]
-            best_sim = sims[order[0]] if len(order) else 0.0
-            for rank_pos in order:
+            positions = np.fromiter(candidate_positions, dtype=np.int64, count=len(candidate_positions))
+            if len(positions) > MAX_CANDIDATE_POOL_SIZE:
+                positions = rng.choice(positions, size=MAX_CANDIDATE_POOL_SIZE, replace=False)
+
+            name_sims = source_name_tfidf[source_name][positions] @ s1_name_vec.T
+            name_sims = np.asarray(name_sims.todense()).ravel()
+            addr_sims = source_addr_tfidf[source_name][positions] @ s1_addr_vec.T
+            addr_sims = np.asarray(addr_sims.todense()).ravel()
+            sims = np.maximum(name_sims, addr_sims)
+
+            # Keep the top-K by name AND (separately) the top-K by address, unioned,
+            # rather than one shared top-K ranked by max(name, addr). A shared ranking
+            # lets "same address, different business" confusers (e.g. mall neighbors)
+            # crowd true name-matches out of the cutoff; separate slates protect each
+            # signal's own best candidates.
+            name_order = np.argsort(-name_sims)[:top_k]
+            addr_order = np.argsort(-addr_sims)[:top_k]
+            order = np.union1d(name_order, addr_order)
+            if len(order) == 0:
+                continue
+            best_sim = sims[order].max()
+            ids = entity_ids[source_name][positions[order]]
+            for rank_pos, entity_id in zip(order, ids):
                 sim = sims[rank_pos]
                 if sim < min_similarity and sim < best_sim:
                     continue
-                entity_id = frame.iloc[int(positions[rank_pos])]["entity_id"]
                 records.append((row.entity_id, entity_id, source_name, float(sim)))
 
     return pd.DataFrame(records, columns=["source1_entity_id", "candidate_entity_id", "source", "similarity"])

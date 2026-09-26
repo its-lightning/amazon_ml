@@ -165,6 +165,17 @@ depth) — keep this at the repo root and copy it into the zip at submission tim
   (populate this file as dependencies are added — pin versions).
 - End-to-end run instructions live in `code/business_entity_resolution/README.md` —
   keep it in sync with the actual entry point(s) as the pipeline is built.
+- Full training data is ~2.3GB / 12.5M rows across the three train sources; the current
+  blocking implementation is a per-entity Python loop, so on a memory-constrained
+  machine (this dev machine: 24-core CPU, RTX 4060 8GB, only ~16GB RAM) it's
+  impractical to run over the full train set directly. `src/make_training_sample.py`
+  builds a bounded, representative sample instead (real positives from ground truth +
+  a random negative/background pool) — see `code/business_entity_resolution/README.md`
+  for the exact commands. **This sampling is for training the matcher only** — final
+  test-set inference must still cover every test Source 1 entity, never sampled.
+- XGBoost training uses the GPU by default (`device="cuda"` in `train_xgboost()`,
+  `code/business_entity_resolution/src/train_matcher.py`); pass `use_gpu=False` on a
+  machine without a CUDA GPU.
 - Validator command: see "Required outputs" above.
 
 ## Fair play reminder

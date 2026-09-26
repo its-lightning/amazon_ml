@@ -24,6 +24,12 @@ TEST_SOURCE1 = TEST_DIR / "test_source1.tsv"
 TEST_SOURCE2 = TEST_DIR / "test_source2.tsv"
 TEST_SOURCE3 = TEST_DIR / "test_source3.tsv"
 
+SAMPLE_DIR = PIPELINE_DIR / "data_sample"   # gitignored, derived training sample (see make_training_sample.py)
+SAMPLE_TRAIN_SOURCE1 = SAMPLE_DIR / "train_source1.tsv"
+SAMPLE_TRAIN_SOURCE2 = SAMPLE_DIR / "train_source2.tsv"
+SAMPLE_TRAIN_SOURCE3 = SAMPLE_DIR / "train_source3.tsv"
+SAMPLE_TRAIN_GROUND_TRUTH = SAMPLE_DIR / "train_ground_truth.tsv"
+
 OUTPUT_DIR = REPO_ROOT / "output"
 MATCHING_RESULTS_PATH = OUTPUT_DIR / "matching_results.tsv"
 CANDIDATE_PAIRS_PATH = OUTPUT_DIR / "candidate_pairs.tsv"
@@ -44,6 +50,11 @@ MIN_TOKEN_LEN = 2
 # Per-source cap on candidates kept per Source 1 entity after TF-IDF re-ranking.
 TOP_K_PER_SOURCE = 20
 MIN_NAME_SIMILARITY = 0.08
+# Hard cap on the token/phonetic-index candidate pool size per (entity, source) before
+# TF-IDF re-ranking, applied on top of MAX_TOKEN_DOC_FREQ. Bounds per-iteration work
+# (and avoids feeding pathologically large index arrays into sparse matrix ops) even if
+# a token's document frequency estimate is off on an unusual data distribution.
+MAX_CANDIDATE_POOL_SIZE = 2000
 
 # --- Matching ---
 RANDOM_SEED = 42
