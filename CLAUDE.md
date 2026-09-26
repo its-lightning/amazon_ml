@@ -16,6 +16,65 @@ Scoring is **F_0.5** (precision weighted 2x over recall), so a false merge is pu
 harder than a missed match — bias thresholds toward precision, and don't guess when
 unsure.
 
+## Current status (updated 2026-09-26 — read this first on a fresh session)
+
+**Pipeline: built and working.** `code/business_entity_resolution/src/` has the full
+blocking → features → train → predict flow (see that folder's `README.md` for exact
+commands). Verified end-to-end multiple times on sampled data.
+
+**Matcher: already trained.** A model exists at
+`code/business_entity_resolution/models/matcher.json` (+ `feature_columns.json`,
+`decision_threshold.json`) trained on a 150K-entity bounded sample
+(`src/make_training_sample.py` — see "Environment / setup" below for why sampling was
+necessary). Validation macro F_0.5 ≈ **0.835**, decision threshold ≈ 0.6. These
+`models/` files are **gitignored — local to this machine only**, not in git. If you're
+on a different machine/clone, this model doesn't exist yet and needs retraining (open
+`notebooks/02_train_matcher.ipynb`, run all cells — see that notebook's prerequisites).
+
+**Not yet done: test-set inference.** `output/matching_results.tsv` and
+`output/candidate_pairs.tsv` do not exist yet. This is the next real task. It requires
+`python -m src.build_candidates --split test` → `build_features.py --split test` →
+`predict.py`, run from `code/business_entity_resolution/`. **This step alone takes
+2.5-4+ hours** (full test set: 1.73M/4.9M/5.1M rows across source1/2/3, no sampling
+allowed here — every test Source 1 entity needs a prediction). Two things to know
+before running it:
+
+1. **Checkpointed and resumable** — see `code/business_entity_resolution/CHECKPOINTING.md`.
+   If interrupted (Ctrl+C, crash, closing the terminal), just re-run the exact same
+   command; it detects the checkpoint and resumes instead of restarting. `--fresh`
+   discards a checkpoint to start clean.
+2. **Check free RAM first.** The one real attempt at this run so far was killed by
+   Claude Code's own memory-pressure protection — not a bug in the pipeline — because
+   the *system* had only ~5GB free out of 16GB total (the rest was other running
+   programs: a game, Discord, browser tabs, IDE — nothing to do with this pipeline).
+   Before starting, check `Get-Process | Sort-Object WorkingSet64 -Descending | Select
+   -First 10 Name, @{N='MemGB';E={[math]::Round($_.WorkingSet64/1GB,2)}}` in PowerShell
+   and close whatever's eating RAM if headroom looks tight. Also pass `--top-k 10`
+   (default is 20) — the default produces an estimated ~135M candidate pairs on the
+   full test set (extrapolated from the training sample's ratio), which is both worse
+   for the "smaller candidate set scores higher" criterion and a real memory risk
+   downstream in `build_features.py` (not checkpointed, not chunked — holds the whole
+   feature table in memory). `--top-k 10` roughly halves that.
+
+**Known gotchas already fixed** (don't reintroduce these):
+- `TfidfVectorizer` OOMs on the full corpus (builds one global vocab dict before
+  applying `max_features` — fine at 1.4M strings, blows up at 11.7M). Fixed: use
+  `HashingVectorizer` + `TfidfTransformer` instead (`src/blocking.py`).
+- The original `downsample_negatives` (per-entity Python loop appending ~300K tiny
+  frames) crashed outright at scale. Fixed: fully vectorized (shuffle + `cumcount` +
+  one concat) in `src/train_matcher.py`.
+- Two segfaults (no Python traceback) occurred generating candidates at ~150K-entity
+  scale before pool-size caps (`MAX_CANDIDATE_POOL_SIZE` in `config.py`) and
+  `float32` dtypes were added — if you see a bare segfault again, suspect unbounded
+  sparse-matrix operations or per-entity candidate pools, not a logic bug.
+
+**Next steps in order:** free RAM → run the 3-step test inference above (checkpointed,
+so safe to interrupt) → validate (`utils/validate_submission.py`) → upload
+`matching_results.tsv` to the leaderboard portal (only the user can do this) → fill in
+`Documentation_template.md` → assemble the final submission zip. See "Ideas for
+improvement" in `code/business_entity_resolution/README.md` for score-improvement
+options once a first full submission exists.
+
 ## Data
 
 Location (do not move — referenced in place, not copied into this repo):
